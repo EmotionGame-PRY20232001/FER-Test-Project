@@ -1,5 +1,3 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using OpenCvSharp;
@@ -10,11 +8,14 @@ public class WebCamera : MonoBehaviour
     private RawImage rawImage;
     [SerializeField]
     private TFLiteTest liteTest;
+    [SerializeField] 
+    private TextAsset haarCascasde;
 
     private WebCamTexture webCamTexture;
     private WebCamDevice[] devices;
     private CascadeClassifier cascade;
     private OpenCvSharp.Rect myFace;
+    private Texture2D finalTexture;
     private Texture2D smallTexture;
 
     // Start is called before the first frame update
@@ -31,32 +32,35 @@ public class WebCamera : MonoBehaviour
                 webCamTexture.deviceName = cam.name;
                 break;
             }
-            else
-            {
-                webCamTexture = new WebCamTexture();
-                break;
-            }
         }
-
 
         rawImage.texture = webCamTexture;
         webCamTexture.Play();
 
-        cascade = new CascadeClassifier(System.IO.Path.Combine(Application.dataPath, "XMLS/haarcascade_frontalface_default.xml"));
+        FileStorage storageFaces = new FileStorage(haarCascasde.text, FileStorage.Mode.Read | FileStorage.Mode.Memory);
+        cascade = new CascadeClassifier();
+        if (!cascade.Read(storageFaces.GetFirstTopLevelNode()))
+            throw new System.Exception("FaceProcessor.Initialize: Failed to load faces cascade classifier");
     }
 
     // Update is called once per frame
     void Update()
     {
-        Mat frame = OpenCvSharp.Unity.TextureToMat(webCamTexture);
-        FindNewFace(frame);
-        Display(frame);
+        finalTexture = new Texture2D(webCamTexture.width, webCamTexture.height);
+        finalTexture.SetPixels(webCamTexture.GetPixels());
+#if UNITY_ANDROID && !UNITY_EDITOR
+        RotateImage(finalTexture, 90);
+#endif
+
+        Mat webImage = OpenCvSharp.Unity.TextureToMat(finalTexture);
+        FindNewFace(webImage);
+        Display(webImage);
     }
 
     private void FindNewFace(Mat frame)
     {
         var faces = cascade.DetectMultiScale(frame, 1.1, 2, HaarDetectionType.ScaleImage);
-
+        
         if (faces.Length > 0)
         {
             myFace = faces[0];
@@ -69,32 +73,27 @@ public class WebCamera : MonoBehaviour
         {
             frame.Rectangle(myFace, new Scalar(250, 0, 0), 2);
         }
-
-        Texture newTexture = OpenCvSharp.Unity.MatToTexture(frame);
-        rawImage.texture = newTexture;
+        else return;
 
         if (webCamTexture.isPlaying && webCamTexture.didUpdateThisFrame)
         {
-            //smallTexture = new Texture2D(myFace.Width, myFace.Height);
-            //smallTexture.SetPixels(webCamTexture.GetPixels());
-            smallTexture = new Texture2D(webCamTexture.width, webCamTexture.height, TextureFormat.RGBA32, false);
-            smallTexture.SetPixels(webCamTexture.GetPixels());
-            ChangeToGrayScale(smallTexture);
+            smallTexture = new Texture2D(myFace.Width, myFace.Height, TextureFormat.RGBA32, false);
+            try
+            {
+                smallTexture.SetPixels(finalTexture.GetPixels(myFace.X, finalTexture.height - myFace.Bottom, myFace.Width, myFace.Height));
+            }
+            catch
+            {
+                return;
+            }
+            
             Scale(smallTexture, 48, 48);
+            ChangeToGrayScale(smallTexture);
             liteTest.ChangeSprite(smallTexture);
         }
-    }
 
-    //[System.Obsolete]
-    public void TakePicture()
-    {
-        Texture2D texture = new Texture2D(myFace.Width, myFace.Height);
-        texture.SetPixels(webCamTexture.GetPixels(myFace.Left, myFace.Top, myFace.Width, myFace.Height));
-        ChangeToGrayScale(texture);
-        Scale(texture, 48, 48);
-        liteTest.ChangeSprite(texture);
-        var bytes = texture.EncodeToJPG(100);
-        System.IO.File.WriteAllBytes("C:\\Users\\Richard\\Desktop\\foto.jpg", bytes);
+        Texture newTexture = OpenCvSharp.Unity.MatToTexture(frame);
+        rawImage.texture = newTexture;
     }
 
     private void ChangeToGrayScale(Texture2D texture)
@@ -150,5 +149,42 @@ public class WebCamera : MonoBehaviour
         //Then clear & draw the texture to fill the entire RTT.
         GL.Clear(true, true, new Color(0, 0, 0, 0));
         Graphics.DrawTexture(new UnityEngine.Rect(0, 0, 1, 1), src);
+    }
+
+    private void RotateImage(Texture2D tex, float angleDegrees)
+    {
+        int width = tex.width;
+        int height = tex.height;
+        float halfHeight = height * 0.5f;
+        float halfWidth = width * 0.5f;
+
+        var texels = tex.GetRawTextureData<Color32>();
+        var copy = System.Buffers.ArrayPool<Color32>.Shared.Rent(texels.Length);
+        Unity.Collections.NativeArray<Color32>.Copy(texels, copy, texels.Length);
+
+        float phi = Mathf.Deg2Rad * angleDegrees;
+        float cosPhi = Mathf.Cos(phi);
+        float sinPhi = Mathf.Sin(phi);
+
+        int address = 0;
+        for (int newY = 0; newY < height; newY++)
+        {
+            for (int newX = 0; newX < width; newX++)
+            {
+                float cX = newX - halfWidth;
+                float cY = newY - halfHeight;
+                int oldX = Mathf.RoundToInt(cosPhi * cX + sinPhi * cY + halfWidth);
+                int oldY = Mathf.RoundToInt(-sinPhi * cX + cosPhi * cY + halfHeight);
+                bool InsideImageBounds = (oldX > -1) & (oldX < width)
+                                       & (oldY > -1) & (oldY < height);
+
+                texels[address++] = InsideImageBounds ? copy[oldY * width + oldX] : default;
+            }
+        }
+
+        // No need to reinitialize or SetPixels - data is already in-place.
+        tex.Apply(true);
+
+        System.Buffers.ArrayPool<Color32>.Shared.Return(copy);
     }
 }
