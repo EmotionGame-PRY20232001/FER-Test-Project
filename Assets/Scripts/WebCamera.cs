@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.UI;
 using OpenCvSharp;
+using System.Collections;
 
 public class WebCamera : MonoBehaviour
 {
@@ -34,6 +35,9 @@ public class WebCamera : MonoBehaviour
             }
         }
 
+#if UNITY_ANDROID && !UNITY_EDITOR
+        rawImage.transform.Rotate(Vector3.forward, 90);
+#endif
         rawImage.texture = webCamTexture;
         webCamTexture.Play();
 
@@ -41,20 +45,25 @@ public class WebCamera : MonoBehaviour
         cascade = new CascadeClassifier();
         if (!cascade.Read(storageFaces.GetFirstTopLevelNode()))
             throw new System.Exception("FaceProcessor.Initialize: Failed to load faces cascade classifier");
+
+        StartCoroutine(EmotionRoutine());
     }
 
-    // Update is called once per frame
-    void Update()
+    private IEnumerator EmotionRoutine()
     {
-        finalTexture = new Texture2D(webCamTexture.width, webCamTexture.height);
-        finalTexture.SetPixels(webCamTexture.GetPixels());
+        finalTexture = new Texture2D(0, 0);
+        myFace = new OpenCvSharp.Rect(0, 0, 48, 48);
+        while (true)
+        {
+            CopyTexture(webCamTexture, finalTexture);
 #if UNITY_ANDROID && !UNITY_EDITOR
-        RotateImage(finalTexture, 90);
+            RotateImage(finalTexture, 90);
 #endif
-
-        Mat webImage = OpenCvSharp.Unity.TextureToMat(finalTexture);
-        FindNewFace(webImage);
-        Display(webImage);
+            Mat webImage = OpenCvSharp.Unity.TextureToMat(finalTexture);
+            FindNewFace(webImage);
+            Display(webImage);
+            yield return new WaitForSeconds(0.2f);
+        }
     }
 
     private void FindNewFace(Mat frame)
@@ -80,7 +89,8 @@ public class WebCamera : MonoBehaviour
             smallTexture = new Texture2D(myFace.Width, myFace.Height, TextureFormat.RGBA32, false);
             try
             {
-                smallTexture.SetPixels(finalTexture.GetPixels(myFace.X, finalTexture.height - myFace.Bottom, myFace.Width, myFace.Height));
+                //smallTexture.SetPixels(finalTexture.GetPixels(myFace.X, finalTexture.height - myFace.Bottom, myFace.Width, myFace.Height));
+                CopySectionTexture(finalTexture, smallTexture, myFace);
             }
             catch
             {
@@ -88,42 +98,21 @@ public class WebCamera : MonoBehaviour
             }
             
             Scale(smallTexture, 48, 48);
-            ChangeToGrayScale(smallTexture);
             liteTest.ChangeSprite(smallTexture);
         }
-
-        Texture newTexture = OpenCvSharp.Unity.MatToTexture(frame);
-        rawImage.texture = newTexture;
-    }
-
-    private void ChangeToGrayScale(Texture2D texture)
-    {
-        var texColors = texture.GetPixels();
-        for (int i = 0; i < texColors.Length; i++)
-        {
-            var grayValue = Vector3.Dot(new Vector3(texColors[i].r, texColors[i].g, texColors[i].b), new Vector3(0.3f, 0.59f, 0.11f));
-            texColors[i] = new Color(grayValue, grayValue, grayValue, 1);
-        }
-        texture.SetPixels(texColors);
-        texture.Apply();
-    }
-
-    private Texture2D Scaled(Texture2D src, int width, int height, FilterMode mode = FilterMode.Trilinear)
-    {
-        UnityEngine.Rect texR = new(0, 0, width, height);
-        _gpu_scale(src, width, height, mode);
-
-        //Get rendered data back to a new texture
-        Texture2D result = new(width, height, TextureFormat.ARGB32, true);
-        result.Reinitialize(width, height);
-        result.ReadPixels(texR, 0, 0, true);
-        return result;
     }
 
     private void Scale(Texture2D tex, int width, int height, FilterMode mode = FilterMode.Trilinear)
     {
         UnityEngine.Rect texR = new(0, 0, width, height);
-        _gpu_scale(tex, width, height, mode);
+        tex.filterMode = mode;
+        tex.Apply(true);
+
+        RenderTexture rtt = new(width, height, 32);
+        Graphics.SetRenderTarget(rtt);
+        GL.LoadPixelMatrix(0, 1, 1, 0);
+        GL.Clear(true, true, new Color(0, 0, 0, 0));
+        Graphics.DrawTexture(new UnityEngine.Rect(0, 0, 1, 1), tex);
 
         // Update new texture
         tex.Reinitialize(width, height);
@@ -131,24 +120,41 @@ public class WebCamera : MonoBehaviour
         tex.Apply(true); //Remove this if you hate us applying textures for you :)
     }
 
-    private static void _gpu_scale(Texture2D src, int width, int height, FilterMode fmode)
+    private void CopySectionTexture(Texture2D src, Texture2D dst, OpenCvSharp.Rect myFace, FilterMode mode = FilterMode.Trilinear)
     {
-        //We need the source texture in VRAM because we render with it
-        src.filterMode = fmode;
+        UnityEngine.Rect texR = new(0, 0, myFace.Width, myFace.Height);
+        src.filterMode = mode;
         src.Apply(true);
 
-        //Using RTT for best quality and performance. Thanks, Unity 5
-        RenderTexture rtt = new(width, height, 32);
-
-        //Set the RTT in order to render to it
+        RenderTexture rtt = new(myFace.Width, myFace.Height, 32);
         Graphics.SetRenderTarget(rtt);
-
-        //Setup 2D matrix in range 0..1, so nobody needs to care about sized
         GL.LoadPixelMatrix(0, 1, 1, 0);
+        GL.Clear(true, true, new Color(0, 0, 0, 0));
+        UnityEngine.Rect section = new((float)myFace.X / src.width, 
+                                       ((float)src.height - myFace.Bottom) / src.height,
+                                       ((float)myFace.Right - myFace.Left) / src.width,
+                                       ((float)myFace.Bottom - myFace.Top) / src.height);
+        Graphics.DrawTexture(new UnityEngine.Rect(0, 0, 1, 1), src, section, 0, 0, 0, 0);
 
-        //Then clear & draw the texture to fill the entire RTT.
+        dst.Reinitialize(myFace.Width, myFace.Height);
+        dst.ReadPixels(texR, 0, 0, true);
+        dst.Apply(true);
+    }
+
+    private void CopyTexture(Texture src, Texture2D dst, FilterMode mode = FilterMode.Trilinear)
+    {
+        UnityEngine.Rect texR = new(0, 0, src.width, src.height);
+        src.filterMode = mode;
+
+        RenderTexture rtt = new(src.width, src.height, 32);
+        Graphics.SetRenderTarget(rtt);
+        GL.LoadPixelMatrix(0, 1, 1, 0);
         GL.Clear(true, true, new Color(0, 0, 0, 0));
         Graphics.DrawTexture(new UnityEngine.Rect(0, 0, 1, 1), src);
+
+        dst.Reinitialize(src.width, src.height);
+        dst.ReadPixels(texR, 0, 0, true);
+        dst.Apply(true);
     }
 
     private void RotateImage(Texture2D tex, float angleDegrees)

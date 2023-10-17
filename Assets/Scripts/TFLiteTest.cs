@@ -19,10 +19,9 @@ public class TFLiteTest : MonoBehaviour
     private float[] input = new float[48*48];
     private float[] output = new float[7];
     private byte[] modelFile;
-    private string[] emotions = { "Angry", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise" };
+    private string[] emotions = { "Enojo", "Disgusto", "Miedo", "Feliz", "Neutral", "Triste", "Sorpresa" };
 
-    // Start is called before the first frame update
-    void Start()
+    private void Awake()
     {
         modelFile = FileUtil.LoadFile(filePath);
 
