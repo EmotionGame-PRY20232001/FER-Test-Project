@@ -2,15 +2,22 @@ using UnityEngine;
 using TensorFlowLite;
 using TMPro;
 using System.Linq;
+using UnityEngine.UI;
+using System;
+using System.Collections.Generic;
 
 public class TFLiteTest : MonoBehaviour
 {
     [SerializeField]
-    TextMeshProUGUI emocionText;
+    private TextMeshProUGUI emocionText;
     [SerializeField]
-    SpriteRenderer emotionSpriteRenderer;
+    private TextMeshProUGUI averageText;
     [SerializeField]
-    ComputeShader compute;
+    private RawImage faceImage;
+    [SerializeField]
+    private Material grayMaterial;
+    [SerializeField]
+    private ComputeShader compute;
     [SerializeField, FilePopup("*.tflite")]
     private string filePath = "ferModel.tflite";
 
@@ -19,10 +26,12 @@ public class TFLiteTest : MonoBehaviour
     private float[] input = new float[48*48];
     private float[] output = new float[7];
     private byte[] modelFile;
+    private List<float> processTimes = new List<float>();
     private string[] emotions = { "Enojo", "Disgusto", "Miedo", "Feliz", "Neutral", "Triste", "Sorpresa" };
 
     private void Awake()
     {
+        faceImage.material = grayMaterial;
         modelFile = FileUtil.LoadFile(filePath);
 
         var options = new InterpreterOptions()
@@ -36,14 +45,13 @@ public class TFLiteTest : MonoBehaviour
 
     public void ChangeSprite(Texture2D texture)
     {
-        Sprite newSprite = Sprite.Create(texture, new Rect(0.0f, 0.0f, texture.width, texture.height), new Vector2(0.5f, 0.5f), 48f);
-        emotionSpriteRenderer.sprite = newSprite;
+        faceImage.texture = texture;
         ExecuteModel();
     }
 
     public void ExecuteModel()
     {
-        compute.SetTexture(0, "InputTexture", emotionSpriteRenderer.sprite.texture);
+        compute.SetTexture(0, "InputTexture", faceImage.texture);
         compute.SetBuffer(0, "OutputTensor", inputBuffer);
         compute.Dispatch(0, 48 / 4, 48 / 4, 1);
         inputBuffer.GetData(input);
@@ -57,8 +65,13 @@ public class TFLiteTest : MonoBehaviour
         float maxValue = output.Max();
         int maxIndex = output.ToList().IndexOf(maxValue);
 
-        Debug.Log(output[0] + ", " + output[1] + ", " + output[2] + ", " + output[3] + ", " + output[4] + ", " + output[5] + ", " + output[6]);
-        Debug.Log("Execution time: " + (finishTime- startTime));
+        if (processTimes.Count < 75)
+        {
+            processTimes.Add(finishTime-startTime);
+            averageText.text = $"Media: {(processTimes.Average() * 1000).ToString("F2")}ms";
+        }
+
+        Debug.Log($"Execution time: {(finishTime - startTime) * 1000}ms");
 
         emocionText.text = emotions[maxIndex];
     }
